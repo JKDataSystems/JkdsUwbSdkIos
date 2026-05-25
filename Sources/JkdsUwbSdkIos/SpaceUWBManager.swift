@@ -39,7 +39,7 @@ private class ConnectedAccessory {
     var rxCharacteristic: CBCharacteristic?
     var txCharacteristic: CBCharacteristic?
     var isUwbActive: Bool = false
-
+    
     init(peripheral: CBPeripheral, name: String) {
         self.peripheral = peripheral
         self.name = name
@@ -50,25 +50,25 @@ private class ConnectedAccessory {
 
 /// BLE 스캔 + NearbyInteraction UWB 세션을 직접 관리하는 독립 구현 클래스
 final class SpaceUWBManager: NSObject {
-
+    
     // MARK: Callbacks
     var onRangeUpdate: ((UWBRangeResult) -> Void)?
     var onDisconnect: ((UWBDisconnectResult) -> Void)?
-
+    
     // MARK: Configuration
     private var maximumConnectionCount: Int = 4
     private var replacementDistanceThreshold: Float = 8.0
     private var uwbUpdateTimeoutSeconds: Int = 5
-
+    
     // MARK: Internal State
-    private var centralManager: CBCentralManager?
+    private var centralManager: CBCentralManager?    
     private var accessories: [UUID: ConnectedAccessory] = [:]
     private var isScanning: Bool = false
     private var blockedDeviceNames: Set<String> = []
     private var timeoutTimers: [UUID: Timer] = [:]
-
+    
     // MARK: - Public API
-
+    
     func startRanging(
         maximumConnectionCount: Int,
         replacementDistanceThreshold: Float,
@@ -78,19 +78,20 @@ final class SpaceUWBManager: NSObject {
         self.maximumConnectionCount = maximumConnectionCount
         self.replacementDistanceThreshold = replacementDistanceThreshold
         self.uwbUpdateTimeoutSeconds = uwbUpdateTimeoutSeconds
-
+        
         stopAll()
-
+        
         centralManager = CBCentralManager(delegate: self, queue: .main)
+        startScanning()
     }
-
+    
     func stopAll() {
         // Cancel all timeout timers
         for (_, timer) in timeoutTimers {
             timer.invalidate()
         }
         timeoutTimers.removeAll()
-
+        
         // Close all NI sessions
         for (_, accessory) in accessories {
             accessory.niSession?.invalidate()
@@ -99,7 +100,7 @@ final class SpaceUWBManager: NSObject {
             }
         }
         accessories.removeAll()
-
+        
         // Stop scanning
         if isScanning {
             centralManager?.stopScan()
@@ -117,7 +118,7 @@ final class SpaceUWBManager: NSObject {
         timeoutTimers[entry.key]?.invalidate()
         timeoutTimers.removeValue(forKey: entry.key)
         accessories.removeValue(forKey: entry.key)
-
+        
         onDisconnect?(UWBDisconnectResult(
             disConnectType: .disconnectedDueToSystem,
             deviceName: deviceName
@@ -133,9 +134,8 @@ final class SpaceUWBManager: NSObject {
             blockedDeviceNames.remove(deviceName)
         }
     }
-
+    
     // MARK: - BLE Scanning
-
     private func startScanning() {
         guard let cm = centralManager, cm.state == .poweredOn else { return }
         cm.scanForPeripherals(
@@ -144,49 +144,47 @@ final class SpaceUWBManager: NSObject {
         )
         isScanning = true
     }
-
+    
     // MARK: - OoB Message Handling
-
     private func sendInitialize(to accessory: ConnectedAccessory) {
         guard let rx = accessory.rxCharacteristic else { return }
         let data = Data([OoBMessageId.initialize])
         accessory.peripheral.writeValue(data, for: rx, type: .withoutResponse)
     }
-
+    
     private func handleReceivedData(_ data: Data, from accessory: ConnectedAccessory) {
         guard !data.isEmpty else { return }
         let messageId = data[0]
-
+        
         switch messageId {
         case OoBMessageId.uwbDeviceConfigurationData:
             // Device sent its UWB config → start NearbyInteraction session
             let payload = data.dropFirst()
             startNISession(for: accessory, deviceConfig: Data(payload))
-
+            
         case OoBMessageId.uwbDidStart:
             accessory.isUwbActive = true
-
+            
         case OoBMessageId.uwbDidStop:
             accessory.isUwbActive = false
-
+            
         default:
             break
         }
     }
-
+    
     // MARK: - NearbyInteraction Session
-
     private func startNISession(for accessory: ConnectedAccessory, deviceConfig: Data) {
         guard NISession.isSupported else {
             NSLog("[SpaceUWBManager] NearbyInteraction is not supported on this device")
             return
         }
-
+        
         let session = NISession()
         let delegate = NISessionDelegateHandler(manager: self, accessory: accessory)
         session.delegate = delegate
         accessory.niSession = session
-
+        
         // Parse device config and create NI configuration
         // The device sends its discovery token; we create a peer configuration from it
         if let peerToken = try? NSKeyedUnarchiver.unarchivedObject(
@@ -201,27 +199,25 @@ final class SpaceUWBManager: NSObject {
             NSLog("[SpaceUWBManager] Failed to decode NI discovery token from device config")
         }
     }
-
+    
+    
     private func startTimeoutTimer(for accessory: ConnectedAccessory) {
         let id = accessory.peripheral.identifier
         timeoutTimers[id]?.invalidate()
         timeoutTimers[id] = Timer.scheduledTimer(
             withTimeInterval: TimeInterval(uwbUpdateTimeoutSeconds),
             repeats: false
-        ) { [weak self] _ in
-            guard let self = self else { return }
-            if self.accessories[id] != nil {
-                self.handlePeerDisconnect(accessory: accessory, type: .disconnectedDueToTimeout)
-            }
+        ) { [weak self, id] _ in
+            guard let accessory = self?.accessories[id] else { return }
+            self?.handlePeerDisconnect(accessory: accessory, type: .disconnectedDueToTimeout)
         }
     }
-
+    
     private func resetTimeoutTimer(for accessory: ConnectedAccessory) {
         startTimeoutTimer(for: accessory)
     }
-
+    
     // MARK: - Disconnect Handling
-
     fileprivate func handlePeerDisconnect(accessory: ConnectedAccessory, type: DisconnectTypeResult) {
         let id = accessory.peripheral.identifier
         accessory.niSession?.invalidate()
@@ -229,23 +225,21 @@ final class SpaceUWBManager: NSObject {
         timeoutTimers[id]?.invalidate()
         timeoutTimers.removeValue(forKey: id)
         accessories.removeValue(forKey: id)
-
+        
         onDisconnect?(UWBDisconnectResult(
             disConnectType: type,
             deviceName: accessory.name
         ))
     }
-
+    
     // MARK: - Range Result Handling
-
     fileprivate func handleRangeResult(accessory: ConnectedAccessory, result: NINearbyObject) {
         resetTimeoutTimer(for: accessory)
-
         let distance = result.distance ?? 0
         let direction = result.direction ?? simd_float3(0, 0, 0)
         let azimuth = atan2(direction.x, direction.z) * 180.0 / .pi
         let elevation = asin(direction.y) * 180.0 / .pi
-
+        
         let rangeResult = UWBRangeResult(
             deviceName: accessory.name,
             distance: distance,
@@ -270,7 +264,7 @@ extension SpaceUWBManager: CBCentralManagerDelegate {
             break
         }
     }
-
+    
     func centralManager(
         _ central: CBCentralManager,
         didDiscover peripheral: CBPeripheral,
@@ -278,31 +272,31 @@ extension SpaceUWBManager: CBCentralManagerDelegate {
         rssi RSSI: NSNumber
     ) {
         let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.identifier.uuidString
-
+        
         // Skip blocked devices
         if blockedDeviceNames.contains(name) { return }
-
+        
         // Skip if already connected/connecting
         if accessories[peripheral.identifier] != nil { return }
-
+        
         // Check connection limit
         if accessories.count >= maximumConnectionCount { return }
-
+        
         // Connect
         let accessory = ConnectedAccessory(peripheral: peripheral, name: name)
         accessories[peripheral.identifier] = accessory
         peripheral.delegate = self
         central.connect(peripheral, options: nil)
     }
-
+    
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         peripheral.discoverServices([UUIDS().kNUSServiceUUID])
     }
-
+    
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         accessories.removeValue(forKey: peripheral.identifier)
     }
-
+    
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         guard let accessory = accessories[peripheral.identifier] else { return }
         handlePeerDisconnect(accessory: accessory, type: .disconnectedDueToSystem)
@@ -318,11 +312,11 @@ extension SpaceUWBManager: CBPeripheralDelegate {
             peripheral.discoverCharacteristics([UUIDS().kNUSRxCharUUID, UUIDS().kNUSTxCharUUID], for: service)
         }
     }
-
+    
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard error == nil, let chars = service.characteristics else { return }
         guard let accessory = accessories[peripheral.identifier] else { return }
-
+        
         for char in chars {
             if char.uuid == UUIDS().kNUSRxCharUUID {
                 accessory.rxCharacteristic = char
@@ -331,13 +325,13 @@ extension SpaceUWBManager: CBPeripheralDelegate {
                 peripheral.setNotifyValue(true, for: char)
             }
         }
-
+        
         // Both characteristics found → send initialize
         if accessory.rxCharacteristic != nil && accessory.txCharacteristic != nil {
             sendInitialize(to: accessory)
         }
     }
-
+    
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil,
               let data = characteristic.value,
@@ -351,17 +345,17 @@ extension SpaceUWBManager: CBPeripheralDelegate {
 private class NISessionDelegateHandler: NSObject, NISessionDelegate {
     weak var manager: SpaceUWBManager?
     let accessory: ConnectedAccessory
-
+    
     init(manager: SpaceUWBManager, accessory: ConnectedAccessory) {
         self.manager = manager
         self.accessory = accessory
     }
-
+    
     func session(_ session: NISession, didUpdate nearbyObjects: [NINearbyObject]) {
         guard let nearbyObject = nearbyObjects.first else { return }
-        manager?.handleRangeResult(accessory: accessory, result: nearbyObject)
+        manager?.handleRangeResult(accessory: accessory, result:nearbyObject)
     }
-
+    
     func session(_ session: NISession, didRemove nearbyObjects: [NINearbyObject], reason: NINearbyObject.RemovalReason) {
         switch reason {
         case .peerEnded:
@@ -372,16 +366,17 @@ private class NISessionDelegateHandler: NSObject, NISessionDelegate {
             manager?.handlePeerDisconnect(accessory: accessory, type: .disconnectedDueToSystem)
         }
     }
-
+    
     func sessionWasSuspended(_ session: NISession) {
         // Session will resume when app returns to foreground
     }
-
+    
     func sessionSuspensionEnded(_ session: NISession) {
         // Session resumed — re-run with existing config if available
     }
-
+    
     func session(_ session: NISession, didInvalidateWith error: Error) {
-        manager?.handlePeerDisconnect(accessory: accessory, type: .disconnectedDueToSystem)
+        self.manager?.handlePeerDisconnect(accessory: accessory, type: .disconnectedDueToSystem)
     }
 }
+
