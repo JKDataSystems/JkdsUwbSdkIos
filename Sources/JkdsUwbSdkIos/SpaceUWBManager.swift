@@ -63,29 +63,36 @@ final class SpaceUWBManager: NSObject {
     // MARK: Internal State
     private var centralManager: CBCentralManager?    
     private var accessories: [UUID: ConnectedAccessory] = [:]
-    private var isScanning: Bool = false
+    private var isScanning: Bool {
+        centralManager?.isScanning ?? false
+    }
     private var blockedDeviceNames: Set<String> = []
     private var timeoutTimers: [UUID: Timer] = [:]
+        
+    private func initCentralManagerIfNeeded() {
+        guard centralManager == nil else { return }
+        // 클래스 프로퍼티로 선언
+        let btQueue = DispatchQueue(label: "jkds.uwb.central.queue")
+        // 초기화 시
+        centralManager = CBCentralManager(delegate: self, queue: btQueue)
+    }
     
-    // MARK: - Public API
-    
-    func startRanging(
+    public func startRanging(
         maximumConnectionCount: Int,
         replacementDistanceThreshold: Float,
         isConnectStrongestSignalFirst: Bool,
         uwbUpdateTimeoutSeconds: Int
     ) {
+        initCentralManagerIfNeeded()
         self.maximumConnectionCount = maximumConnectionCount
         self.replacementDistanceThreshold = replacementDistanceThreshold
         self.uwbUpdateTimeoutSeconds = uwbUpdateTimeoutSeconds
         
         stopAll()
-        
-        centralManager = CBCentralManager(delegate: self, queue: .main)
         startScanning()
     }
     
-    func stopAll() {
+    public func stopAll() {
         // Cancel all timeout timers
         for (_, timer) in timeoutTimers {
             timer.invalidate()
@@ -104,11 +111,10 @@ final class SpaceUWBManager: NSObject {
         // Stop scanning
         if isScanning {
             centralManager?.stopScan()
-            isScanning = false
         }
     }
 
-    func disconnectDevice(named deviceName: String) -> Bool {
+    public func disconnectDevice(named deviceName: String) -> Bool {
         guard let entry = accessories.first(where: { $0.value.name == deviceName }) else {
             return false
         }
@@ -126,7 +132,7 @@ final class SpaceUWBManager: NSObject {
         return true
     }
 
-    func setDeviceBlocked(_ deviceName: String, blocked: Bool) {
+    public func setDeviceBlocked(_ deviceName: String, blocked: Bool) {
         if blocked {
             blockedDeviceNames.insert(deviceName)
             _ = disconnectDevice(named: deviceName)
@@ -142,7 +148,6 @@ final class SpaceUWBManager: NSObject {
             withServices: [UUIDS().kNUSServiceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
-        isScanning = true
     }
     
     // MARK: - OoB Message Handling
