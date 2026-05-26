@@ -11,13 +11,9 @@ import CoreBluetooth
 import NearbyInteraction
 
 // MARK: - BLE Service UUIDs (Nordic UART Service — Android와 동일)
-fileprivate struct UUIDS {
-    let kNUSServiceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9F")
-    let kNUSRxCharUUID  = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9F") // Phone → Device
-    let kNUSTxCharUUID  = CBUUID(string: "6E400003-B5A3-F393-E0A9-E50E24DCCA9F") // Device → Phone
+fileprivate extension String {
+    static let uuid = "6E400001-B5A3-F393-E0A9-E50E24DCCA9F"
 }
-
-
 
 // MARK: - OoB Message IDs (Android OoBHelper과 동일)
 
@@ -83,11 +79,10 @@ final class SpaceUWBManager: NSObject {
         isConnectStrongestSignalFirst: Bool,
         uwbUpdateTimeoutSeconds: Int
     ) {
-        initCentralManagerIfNeeded()
         self.maximumConnectionCount = maximumConnectionCount
         self.replacementDistanceThreshold = replacementDistanceThreshold
         self.uwbUpdateTimeoutSeconds = uwbUpdateTimeoutSeconds
-        
+        initCentralManagerIfNeeded()
         stopAll()
         startScanning()
     }
@@ -145,7 +140,7 @@ final class SpaceUWBManager: NSObject {
     private func startScanning() {
         guard let cm = centralManager, cm.state == .poweredOn else { return }
         cm.scanForPeripherals(
-            withServices: [UUIDS().kNUSServiceUUID],
+            withServices: [.init(string:.uuid)],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
     }
@@ -295,7 +290,7 @@ extension SpaceUWBManager: CBCentralManagerDelegate {
     }
     
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        peripheral.discoverServices([UUIDS().kNUSServiceUUID])
+        peripheral.discoverServices([.init(string:.uuid)])
     }
     
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -313,8 +308,8 @@ extension SpaceUWBManager: CBCentralManagerDelegate {
 extension SpaceUWBManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil, let services = peripheral.services else { return }
-        for service in services where service.uuid == UUIDS().kNUSServiceUUID {
-            peripheral.discoverCharacteristics([UUIDS().kNUSRxCharUUID, UUIDS().kNUSTxCharUUID], for: service)
+        for service in services where service.uuid == .init(string:.uuid) {
+            peripheral.discoverCharacteristics([.init(string:.uuid)], for: service)
         }
     }
     
@@ -323,10 +318,8 @@ extension SpaceUWBManager: CBPeripheralDelegate {
         guard let accessory = accessories[peripheral.identifier] else { return }
         
         for char in chars {
-            if char.uuid == UUIDS().kNUSRxCharUUID {
+            if char.uuid == .init(string:.uuid) {
                 accessory.rxCharacteristic = char
-            } else if char.uuid == UUIDS().kNUSTxCharUUID {
-                accessory.txCharacteristic = char
                 peripheral.setNotifyValue(true, for: char)
             }
         }
